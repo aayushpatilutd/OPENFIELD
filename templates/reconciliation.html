@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Reconciliation{% endblock %}
+{% block heading %}Reconciliation{% endblock %}
+{% block subheading %}Statement against invoice against QuickBooks, by vendor{% endblock %}
+
+{% block actions %}
+<div class="inline">
+  <input type="text" id="period" value="{{ period }}" style="width:110px">
+  <button class="btn" id="btn-run">Run</button>
+  <a class="btn accent" id="btn-export" href="#">Export workbook</a>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="grid c4 mb" id="totals"></div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>Payment plan</h3>
+    <div class="spacer"></div>
+    <span class="tiny muted">Exceptions are held back automatically</span>
+  </div>
+  <div class="panel-body flush">
+    <div class="table-wrap" style="max-height:340px">
+      <table id="plan">
+        <thead><tr>
+          <th>Vendor</th><th>Method</th><th class="num">Invoices</th>
+          <th class="num">Pay now</th><th class="num">Held</th><th>Why held</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="tabs mb">
+  <button class="on" data-filter="all">Everything</button>
+  <button data-filter="exceptions">Needs attention</button>
+  <button data-filter="payable">Ready to pay</button>
+</div>
+
+<div id="groups"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let REPORT = null, FILTER = 'all';
+const PAYABLE = ['matched', 'matched_no_doc', 'credit'];
+
+function periodVal() { return document.getElementById('period').value.trim(); }
+
+async function load() {
+  const p = encodeURIComponent(periodVal());
+  const [rep, plan] = await Promise.all([
+    API.get('/api/match/report?period=' + p),
+    API.get('/api/match/plan?period=' + p)
+  ]);
+  REPORT = rep;
+  document.getElementById('btn-export').href =
+    '/api/reports/download-latest?period=' + p;
+
+  const t = rep.totals;
+  document.getElementById('totals').innerHTML = `
+    <div class="stat good"><div class="label">Net to pay</div>
+      <div class="value">${money(t.net_to_pay)}</div>
+      <div class="foot">${money(t.to_pay)} gross, ${money(t.credits)} credits</div></div>
+    <div class="stat ${t.exceptions ? 'bad' : 'good'}">
+      <div class="label">Needing attention</div>
+      <div class="value">${t.exceptions}</div>
+      <div class="foot">of ${t.rows} invoice numbers</div></div>
+    <div class="stat"><div class="label">Matched</div>
+      <div class="value">${t.matched}</div>
+      <div class="foot">across ${t.vendors} vendors</div></div>
+    <div class="stat ${t.no_statement.length ? 'warn' : 'good'}">
+      <div class="label">No statement</div>
+      <div class="value">${t.no_statement.length}</div>
+      <div class="foot">${t.no_statement.slice(0, 3).join(', ') || 'all received'}</div></div>`;
+
+  document.querySelector('#plan tbody').innerHTML = plan.plan.length
+    ? plan.plan.map(p => `
+      <tr>
+        <td><strong>${esc(p.vendor)}</strong></td>
+        <td><span class="pill">${esc(p.method)}</span></td>
+        <td class="num">${p.invoice_count}</td>
+        ${moneyCell(p.pay_now, p.currency)}
+        <td class="num">${p.held_back.length
+            ? `<span class="pill bad">${p.held_back.length}</span>` : '—'}</td>
+        <td class="tiny muted">${esc(p.held_back.map(h =>
+            `${h.number} (${h.verdict})`).join('; ')).slice(0, 170)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="empty">Nothing to pay.</td></tr>';
+
+  renderGroups();
+}
+
+function renderGroups() {
+  const L = REPORT.verdict_labels;
+  document.getElementById('groups').innerHTML = REPORT.groups.map(g => {
+    let rows = g.rows;
+    if (FILTER === 'exceptions')
+      rows = rows.filter(r => !PAYABLE.includes(r.verdict)
+                           && r.verdict !== 'paid' && !r.resolved);
+    if (FILTER === 'payable')
+      rows = rows.filter(r => PAYABLE.includes(r.verdict) && !r.paid_at);
+    if (!rows.length) return '';
+
+    return `
+    <div class="panel">
+      <div class="panel-head">
+        <h3>${esc(g.vendor_name)}</h3>
+        ${g.statement_received
+          ? '<span class="pill ok">statement in</span>'
+          : '<span class="pill warn">no statement</span>'}
+        ${g.exceptions ? `<span class="pill bad">${g.exceptions} to look at</span>` : ''}
+        <div class="spacer"></div>
+        <span class="muted small">net ${g.terms_days || 30} ·
+          ${esc(g.payment_method || 'method not set')}</span>
+        <strong style="margin-left:14px;font-variant-numeric:tabular-nums">
+          ${money(g.net_to_pay, g.currency)}</strong>
+      </div>
+      <div class="panel-body flush">
+        <table>
+          <thead><tr>
+            <th>Invoice</th><th>Date</th><th>Due</th>
+            <th class="num">Invoice</th><th class="num">Statement</th>
+            <th class="num">QuickBooks</th><th>Verdict</th><th>What it means</th>
+            <th></th>
+          </tr></thead>
+          <tbody>${rows.map(r => `
+            <tr>
+              <td class="mono">${esc(r.invoice_number)}</td>
+              <td class="tiny nowrap">${dateStr(r.invoice_date)}</td>
+              <td class="tiny nowrap">${dateStr(r.due_date)}</td>
+              ${moneyCell(r.amt_invoice, g.currency)}
+              ${moneyCell(r.amt_statement, g.currency)}
+              ${moneyCell(r.amt_qbo, g.currency)}
+              <td>${verdictPill(r.verdict, L[r.verdict])}
+                ${r.paid_at ? '<div><span class="pill ok">paid</span></div>' : ''}
+                ${r.resolved ? '<div><span class="pill">resolved</span></div>' : ''}</td>
+              <td class="tiny muted">${esc(r.note || '')}</td>
+              <td class="right nowrap">
+                ${!r.resolved && !PAYABLE.includes(r.verdict) && r.verdict !== 'paid'
+                  ? `<button class="btn small" onclick="resolve(${r.id}, this)">Resolve</button>`
+                  : ''}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('') || '<div class="panel"><div class="empty">Nothing matches that filter.</div></div>';
+}
+
+async function resolve(id, btn) {
+  await busy(btn, async () => {
+    try {
+      await API.post(`/api/match/row/${id}`, { resolved: true });
+      toast('Marked resolved — it will stay resolved when the match re-runs', 'good');
+      load();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+document.querySelectorAll('.tabs button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    FILTER = b.dataset.filter;
+    renderGroups();
+  };
+});
+
+document.getElementById('btn-run').onclick = e => busy(e.target, async () => {
+  try {
+    const r = await API.post('/api/match/run', { period: periodVal() });
+    toast(`${r.matched} matched, ${r.exceptions} needing attention`, 'good');
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

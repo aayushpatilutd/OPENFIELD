@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Drafts{% endblock %}
+{% block heading %}Outbound drafts{% endblock %}
+{% block subheading %}Written by agents. Nothing leaves until a person presses send.{% endblock %}
+
+{% block actions %}
+<select id="f-status" style="width:150px">
+  <option value="pending">Waiting</option>
+  <option value="sent">Sent</option>
+  <option value="discarded">Discarded</option>
+  <option value="all">Everything</option>
+</select>
+{% endblock %}
+
+{% block content %}
+<div id="list"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const s = document.getElementById('f-status').value;
+  const d = await API.get('/api/drafts?status=' + s);
+
+  document.getElementById('list').innerHTML = d.drafts.length
+    ? d.drafts.map(x => `
+    <div class="panel">
+      <div class="panel-head">
+        <h3>${esc(x.subject)}</h3>
+        <span class="pill ${x.status === 'sent' ? 'ok'
+                          : x.status === 'discarded' ? '' : 'warn'}">${esc(x.status)}</span>
+        <div class="spacer"></div>
+        <span class="tiny muted">${esc(x.vendor_name || '')} ·
+          written ${ago(x.created_at)} by ${esc(x.created_by || '')}</span>
+      </div>
+      <div class="panel-body">
+        ${x.reason ? `<div class="note-box"><strong>Why:</strong> ${esc(x.reason)}</div>` : ''}
+        ${x.error ? `<div class="note-box bad">${esc(x.error)}</div>` : ''}
+        <div class="grid c2">
+          <label class="field"><span>To</span>
+            <input type="text" id="to-${x.id}" value="${esc(x.to_email || '')}"
+                   ${x.status !== 'pending' ? 'disabled' : ''}></label>
+          <label class="field"><span>CC</span>
+            <input type="text" id="cc-${x.id}" value="${esc(x.cc_email || '')}"
+                   ${x.status !== 'pending' ? 'disabled' : ''}></label>
+        </div>
+        <label class="field"><span>Subject</span>
+          <input type="text" id="su-${x.id}" value="${esc(x.subject || '')}"
+                 ${x.status !== 'pending' ? 'disabled' : ''}></label>
+        <label class="field"><span>Body</span>
+          <textarea id="bd-${x.id}" rows="10"
+            ${x.status !== 'pending' ? 'disabled' : ''}>${esc(x.body || '')}</textarea></label>
+        ${x.status === 'pending' ? `
+        <div class="btn-row">
+          <button class="btn primary" onclick="send(${x.id}, this)">Approve and send</button>
+          <button class="btn" onclick="save(${x.id}, this)">Save changes</button>
+          <button class="btn danger" onclick="discard(${x.id}, this)">Discard</button>
+        </div>` : `<div class="tiny faint">
+          ${x.sent_at ? `Sent ${ago(x.sent_at)} by ${esc(x.sent_by || '')}` : ''}</div>`}
+      </div>
+    </div>`).join('')
+    : '<div class="panel"><div class="empty">Nothing here.</div></div>';
+}
+
+async function save(id, btn) {
+  await busy(btn, async () => {
+    try {
+      await API.post(`/api/drafts/${id}`, {
+        action: 'update',
+        to_email: val('to-' + id), cc_email: val('cc-' + id),
+        subject: val('su-' + id), body: document.getElementById('bd-' + id).value
+      });
+      toast('Saved', 'good');
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+async function send(id, btn) {
+  if (!confirm('Send this email to the vendor now?')) return;
+  await busy(btn, async () => {
+    try {
+      // Save any edits first, so what is sent is what is on screen.
+      await API.post(`/api/drafts/${id}`, {
+        action: 'update',
+        to_email: val('to-' + id), cc_email: val('cc-' + id),
+        subject: val('su-' + id), body: document.getElementById('bd-' + id).value
+      });
+      await API.post(`/api/drafts/${id}`, { action: 'send' });
+      toast('Sent', 'good');
+      load();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+async function discard(id, btn) {
+  if (!confirm('Discard this draft?')) return;
+  await busy(btn, async () => {
+    try { await API.post(`/api/drafts/${id}`, { action: 'discard' });
+          toast('Discarded'); load(); }
+    catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+document.getElementById('f-status').onchange = load;
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

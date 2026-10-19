@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block heading %}Reports{% endblock %}
+{% block subheading %}The reconciliation workbook, one tab per vendor{% endblock %}
+
+{% block actions %}
+<div class="inline">
+  <input type="text" id="period" value="{{ period }}" style="width:110px">
+  <button class="btn primary" id="btn-build">Build workbook</button>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="note-box">
+  The workbook opens on a <strong>Summary</strong>, then a
+  <strong>Payment plan</strong>, then every <strong>Exception</strong> — and
+  after that one tab for each vendor carrying their terms, whether they sent a
+  statement, what to pay and what is held back. Totals are live formulas, so
+  the sheet still adds up after someone edits it.
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h3>Generated workbooks</h3></div>
+  <div class="panel-body flush">
+    <div class="table-wrap">
+      <table id="tbl">
+        <thead><tr>
+          <th>File</th><th>Period</th><th class="num">Vendor tabs</th>
+          <th class="num">Size</th><th>Built</th><th>By</th><th></th>
+        </tr></thead>
+        <tbody><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const d = await API.get('/api/reports');
+  document.querySelector('#tbl tbody').innerHTML = d.reports.length
+    ? d.reports.map(r => `
+      <tr>
+        <td class="mono">${esc(r.filename)}</td>
+        <td><span class="pill">${esc(r.period)}</span></td>
+        <td class="num">${r.vendor_tabs}</td>
+        <td class="num">${(r.size_bytes / 1024).toFixed(0)} KB</td>
+        <td class="tiny nowrap">${ago(r.created_at)}</td>
+        <td class="tiny">${esc(r.created_by || '')}</td>
+        <td class="right">
+          <a class="btn small primary" href="/api/reports/${r.id}/download">Download</a>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">None yet — build one above.</td></tr>';
+}
+
+document.getElementById('btn-build').onclick = e => busy(e.target, async () => {
+  try {
+    const period = document.getElementById('period').value.trim();
+    const r = await API.post('/api/reports/build', { period });
+    toast(`Built ${r.filename} with ${r.vendor_tabs} vendor tab(s)`, 'good');
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

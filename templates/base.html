@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Overview{% endblock %} · Openfield</title>
+<meta name="theme-color" content="#082F25">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="icon" href="/static/img/logo.svg">
+</head>
+<body>
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-lockup">
+        <img class="brand-mark" src="/static/img/logo.svg" alt="" width="34" height="34">
+        <h1>Openfield</h1>
+      </div>
+      <small>Business runs brighter</small>
+    </div>
+
+    <nav class="nav">
+      <a href="/"               class="{{ 'on' if active=='dashboard' }}"><span class="ico">⌂</span> Overview</a>
+      <a href="/vendors"        class="{{ 'on' if active=='vendors' }}"><span class="ico">◉</span> Vendors</a>
+
+      <div class="nav-sep">Documents</div>
+      <a href="/inbox"          class="{{ 'on' if active=='inbox' }}"><span class="ico">✉</span> Inbox <span class="count" id="nav-inbox" hidden></span></a>
+      <a href="/invoices"       class="{{ 'on' if active=='invoices' }}"><span class="ico">▤</span> Invoices</a>
+      <a href="/statements"     class="{{ 'on' if active=='statements' }}"><span class="ico">▥</span> Statements</a>
+
+      <div class="nav-sep">Month end</div>
+      <a href="/reconciliation" class="{{ 'on' if active=='reconciliation' }}"><span class="ico">⇄</span> Reconciliation</a>
+      <a href="/reports"        class="{{ 'on' if active=='reports' }}"><span class="ico">⤓</span> Reports</a>
+
+      <div class="nav-sep">Automation</div>
+      <a href="/agents"         class="{{ 'on' if active=='agents' }}"><span class="ico">⚙</span> Agents</a>
+      <a href="/drafts"         class="{{ 'on' if active=='drafts' }}"><span class="ico">✎</span> Drafts <span class="count alert" id="nav-drafts" hidden></span></a>
+
+      <div class="nav-sep">System</div>
+      <a href="/activity"       class="{{ 'on' if active=='activity' }}"><span class="ico">≡</span> Activity</a>
+      <a href="/settings"       class="{{ 'on' if active=='settings' }}"><span class="ico">⚒</span> Settings</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      {% if user %}{{ user.email }}<br>
+      <span class="tiny">{{ user.role }}</span> · <a href="/logout">Sign out</a>
+      {% endif %}
+    </div>
+  </aside>
+
+  <div class="main">
+    {% if demo_mode %}
+    <div class="banner demo">
+      <strong>Demo mode.</strong>
+      Nothing here is real and no live API call is made — the mailbox,
+      QuickBooks and ServiceTitan are all stand-ins.
+      <a href="/settings">Turn it off in Settings</a> when you connect the real thing.
+    </div>
+    {% endif %}
+    {% if default_password_warning %}
+    <div class="banner danger">
+      The <code>admin@invoicehub.local</code> account still has the default
+      password. This portal holds API credentials —
+      <a href="/settings#account">change it now</a>.
+    </div>
+    {% endif %}
+    {% if not encryption_ok %}
+    <div class="banner danger">
+      <code>cryptography</code> is not installed, so API secrets are stored in
+      plain text. Fix with <code>pip install cryptography</code> and re-enter them.
+    </div>
+    {% endif %}
+
+    <header class="topbar">
+      <div>
+        <h2>{% block heading %}{% endblock %}</h2>
+        <div class="sub">{% block subheading %}{% endblock %}</div>
+      </div>
+      <div class="spacer"></div>
+      {% block actions %}{% endblock %}
+    </header>
+
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+<script>
+/* Badge the nav with the two counts that mean somebody has to do something. */
+(async () => {
+  try {
+    const d = await API.get('/api/dashboard');
+    const inbox = (d.stats.docs_pending || 0) + (d.stats.docs_unmatched || 0);
+    if (inbox) {
+      const el = document.getElementById('nav-inbox');
+      el.textContent = inbox; el.hidden = false;
+    }
+    if (d.stats.drafts_pending) {
+      const el = document.getElementById('nav-drafts');
+      el.textContent = d.stats.drafts_pending; el.hidden = false;
+    }
+  } catch (e) { /* the page itself will report any real problem */ }
+})();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

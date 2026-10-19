@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}Inbox{% endblock %}
+{% block heading %}Document inbox{% endblock %}
+{% block subheading %}Everything that has arrived, and what has been read{% endblock %}
+
+{% block actions %}
+<div class="btn-row">
+  <button class="btn" id="btn-upload">Upload</button>
+  <button class="btn" id="btn-parse">Read the backlog</button>
+  <button class="btn primary" id="btn-scan">Sweep mailbox</button>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="panel" id="unmatched-panel" hidden>
+  <div class="panel-head">
+    <h3>Not placed with a vendor</h3>
+    <div class="spacer"></div>
+    <span class="tiny muted">These are filed but unassigned. Nothing is read
+      until it belongs to a vendor.</span>
+  </div>
+  <div class="panel-body flush">
+    <table id="unmatched"><tbody></tbody></table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>All documents</h3>
+    <div class="spacer"></div>
+    <select id="f-status" style="width:170px">
+      <option value="">Any status</option>
+      <option value="pending">Waiting to be read</option>
+      <option value="ok">Read</option>
+      <option value="needs_review">Needs a look</option>
+      <option value="failed">Failed</option>
+    </select>
+    <select id="f-kind" style="width:150px">
+      <option value="">Any kind</option>
+      <option value="invoice">Invoice</option>
+      <option value="statement">Statement</option>
+      <option value="credit">Credit</option>
+      <option value="unknown">Unknown</option>
+    </select>
+  </div>
+  <div class="panel-body flush">
+    <div class="table-wrap">
+      <table id="tbl">
+        <thead><tr>
+          <th>Document</th><th>Vendor</th><th>Kind</th>
+          <th>Arrived</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let VENDORS = [];
+
+async function loadVendors() {
+  VENDORS = (await API.get('/api/vendors')).vendors.filter(v => v.active);
+}
+
+function statusPill(s, conf) {
+  const map = {
+    ok: ['ok', 'read'], pending: ['', 'waiting'],
+    needs_review: ['warn', 'needs a look'], failed: ['bad', 'failed'],
+    skipped: ['', 'skipped']
+  };
+  const [cls, label] = map[s] || ['', s];
+  let out = `<span class="pill ${cls}">${esc(label)}</span>`;
+  if (conf === 'low') out += ' <span class="pill warn">low confidence</span>';
+  return out;
+}
+
+async function load() {
+  const params = new URLSearchParams();
+  const st = document.getElementById('f-status').value;
+  const kd = document.getElementById('f-kind').value;
+  if (st) params.set('status', st);
+  if (kd) params.set('kind', kd);
+
+  const [all, un] = await Promise.all([
+    API.get('/api/documents?' + params),
+    API.get('/api/documents?unmatched=1')
+  ]);
+
+  // unmatched
+  const up = document.getElementById('unmatched-panel');
+  up.hidden = !un.documents.length;
+  document.querySelector('#unmatched tbody').innerHTML = un.documents.map(d => `
+    <tr>
+      <td><strong>${esc(d.filename)}</strong>
+        <div class="tiny muted">from ${esc(d.from_email || 'unknown')} ·
+          ${esc(d.subject || '').slice(0, 90)}</div></td>
+      <td style="width:260px">
+        <select id="assign-${d.id}">
+          <option value="">— choose a vendor —</option>
+          ${VENDORS.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}
+        </select></td>
+      <td style="width:130px">
+        <select id="kind-${d.id}">
+          ${['invoice', 'statement', 'credit', 'remittance'].map(k =>
+            `<option value="${k}" ${d.kind === k ? 'selected' : ''}>${k}</option>`).join('')}
+        </select></td>
+      <td style="width:110px" class="right">
+        <button class="btn small primary" onclick="assign(${d.id}, this)">File it</button>
+      </td>
+    </tr>`).join('');
+
+  // all
+  document.querySelector('#tbl tbody').innerHTML = all.documents.length
+    ? all.documents.map(d => `
+    <tr>
+      <td><strong>${esc(d.filename)}</strong>
+        ${d.subject ? `<div class="tiny muted">${esc(d.subject).slice(0, 110)}</div>` : ''}</td>
+      <td>${d.vendor_name ? esc(d.vendor_name)
+            : '<span class="pill warn">unassigned</span>'}</td>
+      <td><span class="pill">${esc(d.kind)}</span></td>
+      <td class="tiny nowrap">${ago(d.received_at)}</td>
+      <td>${statusPill(d.parse_status, d.confidence)}
+        ${d.parse_error ? `<div class="tiny" style="color:var(--bad)">${esc(d.parse_error).slice(0, 130)}</div>` : ''}</td>
+      <td class="right nowrap">
+        ${d.vendor_id ? `<button class="btn small" onclick="reparse(${d.id}, this)">Read</button>` : ''}
+        <a class="btn small" href="/api/documents/${d.id}/file">File</a>
+      </td>
+    </tr>`).join('')
+    : '<tr><td colspan="6" class="empty">Nothing here.</td></tr>';
+}
+
+async function assign(id, btn) {
+  const vendor_id = document.getElementById('assign-' + id).value;
+  const kind = document.getElementById('kind-' + id).value;
+  if (!vendor_id) { toast('Pick a vendor first', 'bad'); return; }
+  await busy(btn, async () => {
+    try {
+      await API.post(`/api/documents/${id}/assign`, { vendor_id, kind });
+      toast('Filed', 'good');
+      load();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+async function reparse(id, btn) {
+  await busy(btn, async () => {
+    try {
+      const r = await API.post(`/api/documents/${id}/parse`, {});
+      toast(r.kind === 'statement'
+        ? `Read ${r.lines} statement line(s)`
+        : `Read invoice ${r.invoice_number || ''}`, 'good');
+      load();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+document.getElementById('f-status').onchange = load;
+document.getElementById('f-kind').onchange = load;
+
+document.getElementById('btn-scan').onclick = e => busy(e.target, async () => {
+  try {
+    const r = await API.post('/api/scan', {});
+    toast(r.detail, 'good');
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+document.getElementById('btn-parse').onclick = e => busy(e.target, async () => {
+  try {
+    const r = await API.post('/api/parse/pending', {});
+    toast(`${r.parsed} read, ${r.failed} failed`, r.failed ? 'bad' : 'good');
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+document.getElementById('btn-upload').onclick = () => {
+  const m = modal('Upload a document', `
+    <label class="field"><span>File</span>
+      <input type="file" id="u-file" accept=".pdf,.xlsx,.xls,.csv,.png,.jpg"></label>
+    <label class="field"><span>Vendor <span class="hint">— leave blank to decide later</span></span>
+      <select id="u-vendor"><option value="">— not yet —</option>
+        ${VENDORS.map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}
+      </select></label>
+    <label class="field"><span>Kind</span>
+      <select id="u-kind">
+        <option value="invoice">Invoice</option>
+        <option value="statement">Statement</option>
+        <option value="credit">Credit note</option>
+        <option value="unknown">Not sure</option>
+      </select></label>
+    <label class="check"><input type="checkbox" id="u-parse" checked>
+      <span>Read it straight away (needs a vendor)</span></label>
+  `, `<button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="go">Upload</button>`);
+
+  m.querySelector('#go').onclick = e => busy(e.target, async () => {
+    const file = document.getElementById('u-file').files[0];
+    if (!file) { toast('Choose a file', 'bad'); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('vendor_id', val('u-vendor'));
+    fd.append('kind', val('u-kind'));
+    fd.append('parse', document.getElementById('u-parse').checked ? '1' : '0');
+    try {
+      await API.upload('/api/documents/upload', fd);
+      toast('Uploaded', 'good'); m.close(); load();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+};
+
+(async () => { await loadVendors(); await load(); })()
+  .catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

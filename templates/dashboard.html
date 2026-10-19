@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block subheading %}Period <span id="period-label">{{ period }}</span>{% endblock %}
+
+{% block actions %}
+<div class="btn-row">
+  <button class="btn" id="btn-scan">Sweep mailbox</button>
+  <button class="btn" id="btn-sync">Sync QuickBooks</button>
+  <button class="btn primary" id="btn-match">Run reconciliation</button>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="grid c4 mb" id="stats"></div>
+
+<div class="grid c2">
+  <div class="panel">
+    <div class="panel-head">
+      <h3>This period</h3>
+      <div class="spacer"></div>
+      <a href="/reconciliation" class="small">Open reconciliation →</a>
+    </div>
+    <div class="panel-body flush">
+      <div class="table-wrap">
+        <table id="vendor-table">
+          <thead><tr>
+            <th>Vendor</th><th>Statement</th>
+            <th class="num">Net to pay</th><th class="num">Issues</th>
+          </tr></thead>
+          <tbody><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h3>Open balance by age</h3></div>
+    <div class="panel-body" id="ageing"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>What has been happening</h3>
+    <div class="spacer"></div>
+    <a href="/activity" class="small">Full log →</a>
+  </div>
+  <div class="panel-body flush">
+    <div class="table-wrap" style="max-height:420px">
+      <table id="activity-table"><tbody>
+        <tr><td class="empty">Loading…</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let DASH = null;
+
+function card(label, value, foot, cls) {
+  return `<div class="stat ${cls || ''}">
+    <div class="label">${esc(label)}</div>
+    <div class="value">${value}</div>
+    ${foot ? `<div class="foot">${foot}</div>` : ''}
+  </div>`;
+}
+
+async function load() {
+  const d = await API.get('/api/dashboard');
+  DASH = d;
+  const s = d.stats, t = d.totals;
+
+  document.getElementById('stats').innerHTML = [
+    card('Net to pay', money(t.net_to_pay),
+         `${t.matched} matched invoice${t.matched === 1 ? '' : 's'}`,
+         'good'),
+    card('Needing attention', t.exceptions,
+         t.exceptions ? 'Held back from the payment run' : 'Nothing outstanding',
+         t.exceptions ? 'bad' : 'good'),
+    card('Statements in', `${s.statements_received}/${s.vendors}`,
+         s.statements_missing ? `${s.statements_missing} vendor(s) have not sent one`
+                              : 'All received',
+         s.statements_missing ? 'warn' : 'good'),
+    card('Open in QuickBooks', money(s.qbo_balance),
+         `${s.qbo_open} unpaid bill${s.qbo_open === 1 ? '' : 's'}`),
+    card('Waiting to be read', s.docs_pending,
+         s.docs_unmatched ? `${s.docs_unmatched} not placed with a vendor` : 'Inbox clear',
+         s.docs_pending || s.docs_unmatched ? 'warn' : ''),
+    card('Needs a human look', s.docs_review,
+         'Low confidence or failed to parse',
+         s.docs_review ? 'warn' : ''),
+    card('Not yet in QuickBooks', s.not_pushed,
+         'Parsed invoices with no bill',
+         s.not_pushed ? 'warn' : ''),
+    card('Drafts awaiting approval', s.drafts_pending,
+         s.drafts_pending ? 'Nothing sends until you approve it' : 'None waiting',
+         s.drafts_pending ? 'warn' : ''),
+  ].join('');
+
+  // vendors
+  const tb = document.querySelector('#vendor-table tbody');
+  tb.innerHTML = d.top_vendors.length ? d.top_vendors.map(v => `
+    <tr>
+      <td>${esc(v.vendor)}</td>
+      <td>${v.statement
+            ? '<span class="pill ok">received</span>'
+            : '<span class="pill warn">not received</span>'}</td>
+      ${moneyCell(v.net)}
+      <td class="num">${v.exceptions
+            ? `<span class="pill bad">${v.exceptions}</span>` : '—'}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">No reconciliation for this period yet. Press “Run reconciliation”.</td></tr>';
+
+  // ageing
+  const order = ['current', '1-30', '31-60', '61-90', '90+', 'unknown'];
+  const rows = order
+    .map(b => d.ageing.find(x => x.bucket === b))
+    .filter(Boolean);
+  const max = Math.max(1, ...rows.map(r => Math.abs(r.amount)));
+  document.getElementById('ageing').innerHTML = rows.length ? rows.map(r => `
+    <div style="margin-bottom:12px">
+      <div style="display:flex;font-size:12.5px;margin-bottom:4px">
+        <span>${esc(r.bucket)}${r.bucket === 'current' ? '' : ' days'}</span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="muted">${r.n}</span>
+        <strong style="margin-left:12px;font-variant-numeric:tabular-nums">
+          ${money(r.amount)}</strong>
+      </div>
+      <div class="bar"><i style="width:${Math.abs(r.amount) / max * 100}%;
+        background:${r.bucket === 'current' ? 'var(--ok)'
+                   : r.bucket === '90+' ? 'var(--bad)' : 'var(--navy-light)'}"></i></div>
+    </div>`).join('')
+    : '<div class="empty">Nothing open.</div>';
+
+  // activity
+  document.querySelector('#activity-table tbody').innerHTML =
+    d.recent.length ? d.recent.map(a => `
+      <tr>
+        <td style="width:92px" class="tiny faint nowrap">${ago(a.at)}</td>
+        <td style="width:76px"><span class="pill ${a.ok ? '' : 'bad'}">${esc(a.kind)}</span></td>
+        <td>
+          <div>${esc(a.headline)}</div>
+          ${a.detail ? `<div class="tiny muted">${esc(a.detail).slice(0, 220)}</div>` : ''}
+        </td>
+      </tr>`).join('')
+    : '<tr><td class="empty">Nothing yet.</td></tr>';
+}
+
+document.getElementById('btn-scan').onclick = e => busy(e.target, async () => {
+  try {
+    const r = await API.post('/api/scan', {});
+    toast(r.detail || 'Mailbox swept', 'good');
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+document.getElementById('btn-sync').onclick = e => busy(e.target, async () => {
+  try {
+    const r = await API.post('/api/qbo/sync', {});
+    toast(`${r.bills} bill(s) and ${r.payments} payment link(s) refreshed`, 'good');
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+document.getElementById('btn-match').onclick = e => busy(e.target, async () => {
+  try {
+    const r = await API.post('/api/match/run', {});
+    toast(`${r.matched} matched, ${r.exceptions} needing attention`, 'good');
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

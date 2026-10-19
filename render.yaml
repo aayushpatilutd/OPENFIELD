@@ -1,0 +1,123 @@
+# Render Blueprint.
+#
+# Point Render at this repo and it reads this file instead of making you fill
+# in a form. Dashboard → New → Blueprint → pick the repo.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#  READ THIS BEFORE DEPLOYING
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  1. THE DISK IS NOT OPTIONAL.
+#     InvoiceHub keeps its database and every filed invoice PDF on the
+#     filesystem. Render's filesystem is ephemeral — without the disk below,
+#     every vendor, document and reconciliation is destroyed on each deploy
+#     and each restart, silently. The disk requires a paid instance type;
+#     Render's free tier has no persistent storage. If you deploy this on
+#     free, treat it as a demo that resets, not as a system of record.
+#
+#  2. SET INVOICEHUB_FERNET_KEY YOURSELF, ONCE.
+#     It encrypts the stored API credentials. It is marked sync:false below so
+#     Render prompts you rather than baking a secret into git. If you leave it
+#     unset, the app generates a key onto the disk — which works, but then the
+#     key lives only there, and losing the disk means every stored credential
+#     becomes permanently unreadable.
+#
+#     Generate one with:
+#       python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#
+#     Back it up somewhere other than Render.
+#
+#  3. THE FREE TIER SLEEPS.
+#     Render spins free services down after inactivity. The agent scheduler
+#     runs in-process, so a sleeping service runs no agents — your month-end
+#     statement requests will not fire. Agents need a plan that stays warm.
+#
+#  4. ONE INSTANCE ONLY.
+#     APScheduler is in-process. Two instances means every scheduled agent
+#     runs twice: two statement requests, two reconciliations. Do not scale
+#     this service horizontally without moving the agents to a single worker.
+
+services:
+  - type: web
+    name: invoicehub
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter            # 'free' has no disk — see note 1 above
+    region: oregon           # move this nearer your team if you like
+    branch: main
+    healthCheckPath: /healthz
+    autoDeploy: true
+
+    disk:
+      name: invoicehub-data
+      mountPath: /data
+      sizeGB: 5              # the database is small; the PDFs are not
+
+    envVars:
+      # ── where state lives. These must point at the mounted disk. ──────────
+      - key: INVOICEHUB_DB
+        value: /data/invoicehub.db
+      - key: INVOICEHUB_STORAGE
+        value: /data/storage
+
+      # ── Flask session signing. Render generates this for you. ─────────────
+      - key: INVOICEHUB_SECRET_KEY
+        generateValue: true
+
+      # ── credential encryption. You must set this; see note 2. ─────────────
+      #    generateValue is NOT used here: Render's generator produces a random
+      #    string, and Fernet needs exactly 32 url-safe base64 bytes. A
+      #    generated value would fail to decrypt anything.
+      - key: INVOICEHUB_FERNET_KEY
+        sync: false
+
+      # ── start in demo mode so the first deploy is safe to click around. ───
+      #    Flip to 0 in the dashboard, or in Settings, once your credentials
+      #    are in and you want live API calls.
+      - key: INVOICEHUB_DEMO
+        value: "1"
+
+      - key: INVOICEHUB_MAX_UPLOAD_MB
+        value: "64"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+      # ── integrations. All sync:false so nothing lands in git. ─────────────
+      #    Leave them blank and set them in the portal's Settings page
+      #    instead; these exist for teams who prefer config over UI.
+      - key: AZURE_TENANT_ID
+        sync: false
+      - key: AZURE_CLIENT_ID
+        sync: false
+      - key: AZURE_CLIENT_SECRET
+        sync: false
+      - key: GRAPH_USER_EMAIL
+        sync: false
+
+      - key: QBO_CLIENT_ID
+        sync: false
+      - key: QBO_CLIENT_SECRET
+        sync: false
+      - key: QBO_REALM_ID
+        sync: false
+      - key: QBO_SANDBOX
+        value: "0"
+      # Must exactly match the redirect URI on your Intuit app. Update this to
+      # your real Render URL after the first deploy — OAuth will reject a
+      # mismatch with an unhelpful error.
+      - key: QBO_REDIRECT_URI
+        sync: false
+
+      - key: ST_TENANT_ID
+        sync: false
+      - key: ST_CLIENT_ID
+        sync: false
+      - key: ST_CLIENT_SECRET
+        sync: false
+      - key: ST_APP_KEY
+        sync: false
+
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-5

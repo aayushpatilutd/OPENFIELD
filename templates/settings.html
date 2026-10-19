@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block heading %}Settings{% endblock %}
+{% block subheading %}Connect ServiceTitan, Microsoft Graph, QuickBooks and Claude{% endblock %}
+
+{% block content %}
+
+<div class="note-box">
+  Credentials are stored encrypted in the database, not in a config file, so
+  they survive a redeploy and can be changed without one. A secret already set
+  shows as dots — leave it alone to keep it, type over it to replace it.
+</div>
+
+<div id="integrations"></div>
+
+<div class="panel">
+  <div class="panel-head"><h3>General</h3></div>
+  <div class="panel-body">
+    <div class="grid c3">
+      <label class="field"><span>Company name</span>
+        <input type="text" id="g-company_name"></label>
+      <label class="field"><span>Mailbox sweep window (days)</span>
+        <input type="number" id="g-scan_days"></label>
+      <label class="field"><span>Default payment terms (days)</span>
+        <input type="number" id="g-default_terms"></label>
+      <label class="field">
+        <span>Match tolerance
+          <span class="hint">— cents two systems may differ by</span></span>
+        <input type="text" id="g-match_tolerance"></label>
+    </div>
+    <label class="check"><input type="checkbox" id="g-demo_mode">
+      <span><strong>Demo mode</strong>
+        <span class="hint">— every integration returns canned data and no live
+        API call is made. Turn this off once your credentials are in.</span></span>
+    </label>
+    <div class="btn-row mt">
+      <button class="btn primary" id="save-general">Save</button>
+      <button class="btn" id="seed">Reload demo data</button>
+      <button class="btn danger" id="wipe">Clear all data</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="account">
+  <div class="panel-head"><h3>Your password</h3></div>
+  <div class="panel-body">
+    <div class="grid c3">
+      <label class="field"><span>Current password</span>
+        <input type="password" id="p-current"></label>
+      <label class="field"><span>New password</span>
+        <input type="password" id="p-new"></label>
+      <label class="field"><span>&nbsp;</span>
+        <button class="btn primary" id="save-pw">Change password</button></label>
+    </div>
+  </div>
+</div>
+
+{% if user and user.role == 'admin' %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>People</h3>
+    <div class="spacer"></div>
+    <button class="btn small" id="add-user">Add someone</button>
+  </div>
+  <div class="panel-body flush">
+    <table id="users"><tbody></tbody></table>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let CFG = null;
+
+async function load() {
+  CFG = await API.get('/api/settings');
+
+  document.getElementById('integrations').innerHTML =
+    Object.entries(CFG.integrations).map(([key, spec]) => `
+    <div class="panel">
+      <div class="panel-head">
+        <h3>${esc(spec.label)}</h3>
+        <div class="spacer"></div>
+        <a class="tiny" href="${esc(spec.docs)}" target="_blank" rel="noopener">docs ↗</a>
+        <button class="btn small" onclick="test('${key}', this)">Test connection</button>
+        ${key === 'qbo' ? `<a class="btn small" href="/api/qbo/connect">Connect</a>` : ''}
+      </div>
+      <div class="panel-body">
+        <p class="small muted" style="margin-top:0">${esc(spec.blurb)}</p>
+        <div class="grid c2">
+          ${spec.fields.map(f => `
+            <label class="field">
+              <span>${esc(f.label)}
+                ${f.required ? '' : '<span class="hint">— optional</span>'}
+                ${f.from_env ? '<span class="pill info">from .env</span>' : ''}
+                ${f.hint ? `<span class="hint">— ${esc(f.hint)}</span>` : ''}</span>
+              <input type="text" id="s-${f.key}" value="${esc(f.value)}"
+                     ${f.secret ? 'autocomplete="off"' : ''}>
+            </label>`).join('')}
+        </div>
+        <div class="btn-row">
+          <button class="btn primary" onclick="saveGroup('${key}', this)">Save</button>
+          <span class="tiny faint" id="test-${key}" style="align-self:center"></span>
+        </div>
+      </div>
+    </div>`).join('');
+
+  const g = CFG.general;
+  ['company_name','scan_days','default_terms','match_tolerance'].forEach(k => {
+    const el = document.getElementById('g-' + k);
+    if (el) el.value = g[k] || '';
+  });
+  document.getElementById('g-demo_mode').checked = CFG.demo_mode;
+
+  if (document.getElementById('users')) loadUsers();
+}
+
+async function saveGroup(key, btn) {
+  await busy(btn, async () => {
+    const settings = {};
+    CFG.integrations[key].fields.forEach(f => {
+      settings[f.key] = val('s-' + f.key);
+    });
+    try {
+      await API.post('/api/settings', { settings });
+      toast('Saved', 'good');
+      load();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+}
+
+async function test(key, btn) {
+  const out = document.getElementById('test-' + key);
+  out.textContent = 'testing…';
+  await busy(btn, async () => {
+    try {
+      const r = await fetch(`/api/settings/test/${key}`, { method: 'POST' })
+        .then(x => x.json());
+      out.innerHTML = `<span class="pill ${r.ok ? 'ok' : 'bad'}">
+        ${r.ok ? 'connected' : 'failed'}</span> ${esc(r.detail || '')}`;
+    } catch (e) {
+      out.innerHTML = `<span class="pill bad">failed</span> ${esc(e.message)}`;
+    }
+  });
+}
+
+document.getElementById('save-general').onclick = e => busy(e.target, async () => {
+  try {
+    await API.post('/api/settings', { settings: {
+      company_name: val('g-company_name'),
+      scan_days: val('g-scan_days'),
+      default_terms: val('g-default_terms'),
+      match_tolerance: val('g-match_tolerance'),
+      demo_mode: document.getElementById('g-demo_mode').checked ? '1' : '0',
+    }});
+    toast('Saved — reloading', 'good');
+    setTimeout(() => location.reload(), 600);
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+document.getElementById('seed').onclick = e => busy(e.target, async () => {
+  if (!confirm('Replace all vendors, documents and history with the demo set?')) return;
+  try {
+    const r = await API.post('/api/demo/seed', {});
+    toast(`Loaded ${r.vendors} vendors and ${r.invoices} invoices`, 'good');
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+document.getElementById('wipe').onclick = e => busy(e.target, async () => {
+  if (!confirm('Delete every vendor, document, invoice and report? '
+             + 'Users and settings are kept. This cannot be undone.')) return;
+  try { await API.post('/api/demo/wipe', {}); toast('Cleared'); }
+  catch (err) { toast(err.message, 'bad'); }
+});
+
+document.getElementById('save-pw').onclick = e => busy(e.target, async () => {
+  try {
+    await API.post('/api/me/password', {
+      current_password: val('p-current'), new_password: val('p-new')
+    });
+    toast('Password changed', 'good');
+    document.getElementById('p-current').value = '';
+    document.getElementById('p-new').value = '';
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+async function loadUsers() {
+  const d = await API.get('/api/users');
+  document.querySelector('#users tbody').innerHTML = d.users.map(u => `
+    <tr>
+      <td><strong>${esc(u.email)}</strong>
+        ${u.name ? `<div class="tiny muted">${esc(u.name)}</div>` : ''}</td>
+      <td><span class="pill">${esc(u.role)}</span></td>
+      <td class="tiny faint">${u.last_login ? 'last in ' + ago(u.last_login) : 'never signed in'}</td>
+    </tr>`).join('');
+}
+
+const addBtn = document.getElementById('add-user');
+if (addBtn) addBtn.onclick = () => {
+  const m = modal('Add someone', `
+    <label class="field"><span>Email</span><input type="email" id="n-email"></label>
+    <label class="field"><span>Name</span><input type="text" id="n-name"></label>
+    <label class="field"><span>Password <span class="hint">— at least 8 characters</span></span>
+      <input type="text" id="n-password"></label>
+    <label class="field"><span>Role</span>
+      <select id="n-role">
+        <option value="viewer">viewer — read only</option>
+        <option value="clerk" selected>clerk — can edit and parse</option>
+        <option value="approver">approver — can send email and push bills</option>
+        <option value="admin">admin — everything, including credentials</option>
+      </select></label>
+  `, `<button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="go">Create</button>`);
+  m.querySelector('#go').onclick = e => busy(e.target, async () => {
+    try {
+      await API.post('/api/users', {
+        email: val('n-email'), name: val('n-name'),
+        password: val('n-password'), role: val('n-role')
+      });
+      toast('Created', 'good'); m.close(); loadUsers();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+};
+
+if (qs('connected') === 'qbo') toast('QuickBooks connected', 'good');
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

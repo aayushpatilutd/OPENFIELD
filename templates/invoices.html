@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Invoices{% endblock %}
+{% block heading %}Invoices{% endblock %}
+{% block subheading %}What we hold, and whether QuickBooks knows about it{% endblock %}
+
+{% block actions %}
+<button class="btn primary" id="btn-push-ready">Push eligible to QuickBooks</button>
+{% endblock %}
+
+{% block content %}
+
+<div class="note-box">
+  Pushing creates a <strong>Bill</strong> in QuickBooks. It is refused when the
+  invoice has no number, when the vendor is not linked, or when the parse was
+  low confidence — a duplicate bill is quiet and expensive, so the portal would
+  rather stop and ask.
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>Invoices</h3>
+    <div class="spacer"></div>
+    <input type="text" id="q" placeholder="Invoice or PO number…" style="width:200px">
+    <select id="f-pushed" style="width:180px">
+      <option value="">In QuickBooks or not</option>
+      <option value="0">Not pushed</option>
+      <option value="1">Pushed</option>
+    </select>
+  </div>
+  <div class="panel-body flush">
+    <div class="table-wrap">
+      <table id="tbl">
+        <thead><tr>
+          <th>Invoice</th><th>Vendor</th><th>Date</th><th>Due</th>
+          <th class="num">Amount</th><th>PO / job</th>
+          <th>QuickBooks</th><th></th>
+        </tr></thead>
+        <tbody><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let ROWS = [];
+
+async function load() {
+  const p = new URLSearchParams();
+  const q = document.getElementById('q').value.trim();
+  const pushed = document.getElementById('f-pushed').value;
+  if (q) p.set('q', q);
+  if (pushed) p.set('pushed', pushed);
+
+  const d = await API.get('/api/invoices?' + p);
+  ROWS = d.invoices;
+  document.querySelector('#tbl tbody').innerHTML = ROWS.length ? ROWS.map(i => `
+    <tr>
+      <td><strong class="mono">${esc(i.invoice_number || '(no number)')}</strong>
+        ${i.confidence === 'low'
+          ? '<div><span class="pill warn">low confidence</span></div>' : ''}</td>
+      <td>${esc(i.vendor_name || '—')}</td>
+      <td class="tiny nowrap">${dateStr(i.invoice_date)}</td>
+      <td class="tiny nowrap">${dateStr(i.due_date)}</td>
+      ${moneyCell(i.amount, i.currency)}
+      <td class="tiny">${esc(i.po_number || '—')}
+        ${i.job_ref ? `<div class="faint">job ${esc(i.job_ref)}</div>` : ''}</td>
+      <td>${i.qbo_bill_id
+            ? `<span class="pill ok">bill ${esc(i.qbo_bill_id)}</span>`
+            : (i.qbo_push_error
+               ? `<span class="pill bad">refused</span>
+                  <div class="tiny" style="color:var(--bad)">${esc(i.qbo_push_error).slice(0,120)}</div>`
+               : '<span class="pill">not pushed</span>')}</td>
+      <td class="right nowrap">
+        <button class="btn small" onclick="editInv(${i.id})">Edit</button>
+        ${!i.qbo_bill_id
+          ? `<button class="btn small primary" onclick="push(${i.id}, this)">Push</button>`
+          : ''}
+      </td>
+    </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">Nothing matches.</td></tr>';
+}
+
+async function push(id, btn, override) {
+  await busy(btn, async () => {
+    try {
+      const r = await API.post(`/api/invoices/${id}/push`, { override: !!override });
+      toast(`Created QuickBooks bill ${r.qbo_bill_id}`, 'good');
+      load();
+    } catch (e) {
+      if (e.payload && e.payload.needs_override) {
+        if (confirm(e.message + '\n\nPush anyway?')) return push(id, btn, true);
+      } else { toast(e.message, 'bad'); }
+    }
+  });
+}
+
+function editInv(id) {
+  const i = ROWS.find(x => x.id === id);
+  const m = modal(`Invoice ${i.invoice_number || ''}`, `
+    <div class="grid c2">
+      <label class="field"><span>Invoice number</span>
+        <input type="text" id="e-invoice_number" value="${esc(i.invoice_number || '')}"></label>
+      <label class="field"><span>Amount</span>
+        <input type="text" id="e-amount" value="${i.amount === null ? '' : i.amount}"></label>
+      <label class="field"><span>Invoice date</span>
+        <input type="date" id="e-invoice_date" value="${esc((i.invoice_date || '').slice(0,10))}"></label>
+      <label class="field"><span>Due date</span>
+        <input type="date" id="e-due_date" value="${esc((i.due_date || '').slice(0,10))}"></label>
+      <label class="field"><span>PO number</span>
+        <input type="text" id="e-po_number" value="${esc(i.po_number || '')}"></label>
+      <label class="field"><span>Status</span>
+        <select id="e-status">
+          ${['open','pushed','paid','disputed','void'].map(s =>
+            `<option value="${s}" ${i.status===s?'selected':''}>${s}</option>`).join('')}
+        </select></label>
+    </div>
+    ${i.confidence === 'low' ? `<div class="note-box warn">
+      The parser flagged this as a poor read. Check the number and the amount
+      against the document before pushing it.</div>` : ''}
+    <div class="tiny faint">Document: ${esc(i.doc_filename || '—')}</div>
+  `, `<button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="save">Save</button>`);
+
+  m.querySelector('#save').onclick = e => busy(e.target, async () => {
+    const payload = {};
+    ['invoice_number','amount','invoice_date','due_date','po_number','status']
+      .forEach(k => payload[k] = val('e-' + k));
+    try {
+      await API.post(`/api/invoices/${id}`, payload);
+      toast('Saved', 'good'); m.close(); load();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+}
+
+document.getElementById('q').oninput = () => { clearTimeout(window._t);
+  window._t = setTimeout(load, 300); };
+document.getElementById('f-pushed').onchange = load;
+
+document.getElementById('btn-push-ready').onclick = e => busy(e.target, async () => {
+  try {
+    const r = await API.post('/api/invoices/push-ready', {});
+    toast(`${r.pushed} pushed, ${r.failed} refused of ${r.considered} eligible`,
+          r.failed ? 'bad' : 'good');
+    if (r.errors && r.errors.length) console.warn('Refusals:', r.errors);
+    load();
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

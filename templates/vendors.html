@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}Vendors{% endblock %}
+{% block heading %}Vendors{% endblock %}
+{% block subheading %}How each supplier's post arrives, and where their money goes{% endblock %}
+
+{% block actions %}
+<button class="btn primary" onclick="editVendor(null)">Add a vendor</button>
+{% endblock %}
+
+{% block content %}
+
+<div class="note-box">
+  The routing rules live on the vendor because only you know how each supplier
+  words a subject line. Get the <strong>invoice email</strong> and
+  <strong>statement subject</strong> right and documents file themselves;
+  leave them blank and everything lands in the inbox for a human to place.
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>All vendors</h3>
+    <div class="spacer"></div>
+    <input type="text" id="filter" placeholder="Filter…" style="width:220px">
+  </div>
+  <div class="panel-body flush">
+    <div class="table-wrap">
+      <table id="tbl">
+        <thead><tr>
+          <th>Vendor</th><th>Terms</th><th>Invoices from</th>
+          <th>Statement</th><th>QuickBooks</th>
+          <th class="num">Open</th><th class="num">Docs</th><th></th>
+        </tr></thead>
+        <tbody><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let VENDORS = [];
+
+async function load() {
+  const d = await API.get('/api/vendors');
+  VENDORS = d.vendors;
+  render();
+}
+
+function render() {
+  const q = (document.getElementById('filter').value || '').toLowerCase();
+  const rows = VENDORS.filter(v => !q || (v.name || '').toLowerCase().includes(q));
+  document.querySelector('#tbl tbody').innerHTML = rows.length ? rows.map(v => `
+    <tr>
+      <td>
+        <strong>${esc(v.name)}</strong>
+        ${v.active ? '' : '<span class="pill">inactive</span>'}
+        ${v.currency && v.currency !== 'USD'
+          ? `<span class="pill info">${esc(v.currency)}</span>` : ''}
+        ${v.notes ? `<div class="tiny muted">${esc(v.notes).slice(0, 110)}</div>` : ''}
+      </td>
+      <td class="nowrap">net ${v.terms_days || 30}</td>
+      <td class="tiny">${esc(v.invoice_email || '—')}</td>
+      <td>${v.statement_this_period
+            ? '<span class="pill ok">received</span>'
+            : '<span class="pill warn">not in</span>'}</td>
+      <td>${v.qbo_vendor_id
+            ? `<span class="pill ok">linked</span>`
+            : '<span class="pill bad">not linked</span>'}
+          ${v.auto_push_bills ? '<span class="pill info">auto-push</span>' : ''}</td>
+      ${moneyCell(v.open_balance, v.currency)}
+      <td class="num">${v.doc_count || 0}</td>
+      <td class="right nowrap">
+        <button class="btn small" onclick="editVendor(${v.id})">Edit</button>
+      </td>
+    </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">No vendors yet.</td></tr>';
+}
+
+document.getElementById('filter').oninput = render;
+
+function f(id, label, value, opts) {
+  opts = opts || {};
+  return `<label class="field"><span>${esc(label)}
+    ${opts.hint ? `<span class="hint">— ${esc(opts.hint)}</span>` : ''}</span>
+    <input type="${opts.type || 'text'}" id="v-${id}"
+           value="${esc(value === null || value === undefined ? '' : value)}"
+           ${opts.ph ? `placeholder="${esc(opts.ph)}"` : ''}></label>`;
+}
+
+function chk(id, label, on, hint) {
+  return `<label class="check"><input type="checkbox" id="v-${id}" ${on ? 'checked' : ''}>
+    <span>${esc(label)}${hint ? ` <span class="hint faint">— ${esc(hint)}</span>` : ''}</span></label>`;
+}
+
+function editVendor(id) {
+  const v = id ? (VENDORS.find(x => x.id === id) || {}) : {};
+  const m = modal(id ? `Edit ${v.name}` : 'Add a vendor', `
+    <div class="grid c2">
+      <div>
+        <h4 style="margin:0 0 10px;font-size:13px">Identity</h4>
+        ${f('name', 'Name', v.name, { hint: 'as you refer to them' })}
+        ${f('display_name', 'Their legal name', v.display_name)}
+        ${f('account_number', 'Our account number with them', v.account_number)}
+        ${f('terms_days', 'Payment terms (days)', v.terms_days || 30, { type: 'number' })}
+        ${f('currency', 'Currency', v.currency || 'USD')}
+        ${f('early_pay_discount', 'Early payment discount', v.early_pay_discount,
+            { ph: '2/10 net 30' })}
+
+        <h4 style="margin:18px 0 10px;font-size:13px">Paying them</h4>
+        <label class="field"><span>Method</span>
+          <select id="v-payment_method">
+            ${['', 'ach', 'check', 'card', 'portal'].map(x =>
+              `<option value="${x}" ${v.payment_method === x ? 'selected' : ''}>
+                 ${x || '— not set —'}</option>`).join('')}
+          </select></label>
+        ${f('payment_portal_url', 'Payment portal', v.payment_portal_url)}
+      </div>
+
+      <div>
+        <h4 style="margin:0 0 10px;font-size:13px">How their post arrives</h4>
+        ${f('invoice_email', 'Invoices come from', v.invoice_email,
+            { hint: 'address or domain' })}
+        ${f('invoice_subject', 'Invoice subject contains', v.invoice_subject,
+            { ph: 'Invoice' })}
+        ${f('statement_email', 'Statements come from', v.statement_email)}
+        ${f('statement_subject', 'Statement subject contains', v.statement_subject,
+            { ph: 'Statement of Account' })}
+        ${f('request_email', 'Write to them at', v.request_email,
+            { hint: 'where agents address requests' })}
+        ${f('cc_emails', 'CC', v.cc_emails)}
+
+        <h4 style="margin:18px 0 10px;font-size:13px">Links to other systems</h4>
+        ${f('qbo_vendor_id', 'QuickBooks vendor ID', v.qbo_vendor_id,
+            { hint: 'required to push bills' })}
+        ${f('qbo_vendor_name', 'QuickBooks vendor name', v.qbo_vendor_name)}
+        ${f('default_expense_account', 'Default expense account', v.default_expense_account,
+            { hint: 'QBO account id to post to' })}
+        ${f('st_vendor_id', 'ServiceTitan vendor ID', v.st_vendor_id)}
+      </div>
+    </div>
+
+    <h4 style="margin:6px 0 10px;font-size:13px">Behaviour</h4>
+    <div class="grid c2">
+      <div>
+        <label class="field"><span>Statement cadence</span>
+          <select id="v-statement_cadence">
+            ${['monthly', 'weekly', 'none'].map(x =>
+              `<option value="${x}" ${(v.statement_cadence || 'monthly') === x
+                ? 'selected' : ''}>${x}</option>`).join('')}
+          </select></label>
+      </div>
+      <div style="padding-top:22px">
+        ${chk('active', 'Active', v.id ? v.active : 1)}
+        ${chk('auto_request_statement', 'Ask for a statement automatically',
+              v.id ? v.auto_request_statement : 1, 'drafts only, never sends')}
+        ${chk('auto_push_bills', 'Push their invoices to QuickBooks automatically',
+              v.auto_push_bills, 'only for suppliers whose invoices parse cleanly')}
+        ${chk('requires_po', 'Invoices must carry a PO number', v.requires_po)}
+      </div>
+    </div>
+
+    <label class="field"><span>Notes</span>
+      <textarea id="v-notes">${esc(v.notes || '')}</textarea></label>
+  `, `
+    ${id ? '<button class="btn danger" id="del">Delete</button>' : ''}
+    <div style="flex:1"></div>
+    <button class="btn" data-close>Cancel</button>
+    <button class="btn primary" id="save">Save</button>
+  `, { wide: true });
+
+  m.querySelector('#save').onclick = e => busy(e.target, async () => {
+    const payload = { id: id || undefined };
+    ['name', 'display_name', 'account_number', 'terms_days', 'currency',
+     'early_pay_discount', 'payment_method', 'payment_portal_url',
+     'invoice_email', 'invoice_subject', 'statement_email', 'statement_subject',
+     'request_email', 'cc_emails', 'qbo_vendor_id', 'qbo_vendor_name',
+     'default_expense_account', 'st_vendor_id', 'statement_cadence', 'notes',
+     'active', 'auto_request_statement', 'auto_push_bills', 'requires_po'
+    ].forEach(k => { payload[k] = val('v-' + k); });
+
+    try {
+      await API.post('/api/vendors', payload);
+      toast('Saved', 'good');
+      m.close();
+      load();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+
+  const del = m.querySelector('#del');
+  if (del) del.onclick = async () => {
+    if (!confirm(`Delete ${v.name}? Deactivating is usually what you want.`)) return;
+    try {
+      await API.del(`/api/vendors/${id}`);
+      toast('Deleted'); m.close(); load();
+    } catch (err) {
+      if (err.payload && err.payload.needs_force) {
+        if (confirm(err.message + '\n\nDelete anyway?')) {
+          await API.del(`/api/vendors/${id}?force=1`);
+          toast('Deleted'); m.close(); load();
+        }
+      } else { toast(err.message, 'bad'); }
+    }
+  };
+}
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

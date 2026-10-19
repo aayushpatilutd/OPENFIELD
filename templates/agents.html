@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Agents{% endblock %}
+{% block heading %}Automated agents{% endblock %}
+{% block subheading %}Scheduled work. Nothing emails a vendor without your approval.{% endblock %}
+
+{% block actions %}
+<button class="btn primary" onclick="editAgent(null)">New agent</button>
+{% endblock %}
+
+{% block content %}
+
+<div class="note-box warn">
+  <strong>Agents never send email.</strong> The ones that would write to a
+  vendor produce a draft and stop; you approve it on the
+  <a href="/drafts">Drafts</a> page. An AP agent with a live mailbox will
+  eventually chase a supplier for an invoice you already paid, and you will
+  hear about it from the supplier rather than from your software.
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h3>Agents</h3></div>
+  <div class="panel-body flush">
+    <div class="table-wrap">
+      <table id="tbl">
+        <thead><tr>
+          <th>Agent</th><th>Does</th><th>Schedule</th>
+          <th>Last run</th><th>On</th><th></th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h3>Recent runs</h3></div>
+  <div class="panel-body flush">
+    <div class="table-wrap" style="max-height:420px">
+      <table id="runs"><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let AGENTS = [], KINDS = {}, VENDORS = [];
+
+const CRON_HINTS = [
+  ['*/30 * * * *', 'every 30 minutes'],
+  ['0 * * * *',    'hourly'],
+  ['0 6 * * *',    'every day at 06:00'],
+  ['0 8 2 * *',    'the 2nd of each month at 08:00'],
+  ['0 9 * * 1',    'every Monday at 09:00'],
+];
+
+function describeCron(c) {
+  if (!c) return '—';
+  const hit = CRON_HINTS.find(h => h[0] === c);
+  return hit ? hit[1] : `cron ${c}`;
+}
+
+async function load() {
+  const [d, v] = await Promise.all([
+    API.get('/api/agents'), API.get('/api/vendors')
+  ]);
+  AGENTS = d.agents; KINDS = d.kinds; VENDORS = v.vendors.filter(x => x.active);
+
+  document.querySelector('#tbl tbody').innerHTML = AGENTS.map(a => `
+    <tr>
+      <td><strong>${esc(a.name)}</strong>
+        ${a.requires_approval
+          ? '<span class="pill info">drafts only</span>' : ''}
+        ${a.vendor_name ? `<div class="tiny muted">${esc(a.vendor_name)} only</div>` : ''}</td>
+      <td class="tiny muted" style="max-width:380px">${esc(a.description || KINDS[a.kind] || '')}</td>
+      <td class="tiny nowrap">${a.schedule_kind === 'interval'
+          ? `every ${a.interval_mins} min` : describeCron(a.cron)}
+        ${a.next_run_at ? `<div class="faint">next ${ago(a.next_run_at)}</div>` : ''}</td>
+      <td class="tiny">${a.last_run_at
+          ? `<span class="pill ${a.last_status === 'ok' ? 'ok' : 'bad'}">${esc(a.last_status)}</span>
+             <div class="faint">${ago(a.last_run_at)}</div>
+             <div class="muted">${esc(a.last_summary || '').slice(0, 90)}</div>`
+          : '<span class="faint">never</span>'}</td>
+      <td><label class="check" style="margin:0">
+        <input type="checkbox" ${a.enabled ? 'checked' : ''}
+               onchange="toggle(${a.id})"></label></td>
+      <td class="right nowrap">
+        <button class="btn small" onclick="runNow(${a.id}, this)">Run now</button>
+        <button class="btn small" onclick="editAgent(${a.id})">Edit</button>
+      </td>
+    </tr>`).join('');
+
+  document.querySelector('#runs tbody').innerHTML = d.runs.length
+    ? d.runs.map(r => `
+      <tr>
+        <td style="width:92px" class="tiny faint nowrap">${ago(r.started_at)}</td>
+        <td style="width:190px">${esc(r.agent_name)}</td>
+        <td style="width:80px"><span class="pill ${r.status === 'ok' ? 'ok' : 'bad'}">
+          ${esc(r.status)}</span></td>
+        <td style="width:70px" class="tiny faint">${esc(r.trigger || '')}</td>
+        <td class="tiny">${esc(r.summary || r.error || '').slice(0, 220)}</td>
+      </tr>`).join('')
+    : '<tr><td class="empty">No runs yet.</td></tr>';
+}
+
+async function toggle(id) {
+  try { const r = await API.post(`/api/agents/${id}/toggle`, {});
+        toast(r.enabled ? 'Enabled' : 'Disabled'); load(); }
+  catch (e) { toast(e.message, 'bad'); load(); }
+}
+
+async function runNow(id, btn) {
+  await busy(btn, async () => {
+    try {
+      const r = await API.post(`/api/agents/${id}/run`, {});
+      toast(r.detail || 'Done', 'good');
+      load();
+    } catch (e) { toast(e.message, 'bad'); load(); }
+  });
+}
+
+function editAgent(id) {
+  const a = id ? AGENTS.find(x => x.id === id) || {} : {};
+  const m = modal(id ? `Edit ${a.name}` : 'New agent', `
+    <label class="field"><span>Name</span>
+      <input type="text" id="a-name" value="${esc(a.name || '')}"
+             placeholder="Chase Company ABC for a statement"></label>
+
+    <label class="field"><span>What it does</span>
+      <select id="a-kind">
+        ${Object.entries(KINDS).map(([k, label]) =>
+          `<option value="${k}" ${a.kind === k ? 'selected' : ''}>${esc(label)}</option>`
+        ).join('')}
+      </select></label>
+
+    <label class="field"><span>Description <span class="hint">— shown in the list</span></span>
+      <input type="text" id="a-description" value="${esc(a.description || '')}"></label>
+
+    <div class="grid c2">
+      <label class="field"><span>Schedule type</span>
+        <select id="a-schedule_kind">
+          ${['cron', 'interval', 'manual'].map(s =>
+            `<option value="${s}" ${(a.schedule_kind || 'cron') === s
+              ? 'selected' : ''}>${s}</option>`).join('')}
+        </select></label>
+      <label class="field"><span>Only this vendor <span class="hint">— optional</span></span>
+        <select id="a-vendor_id"><option value="">— all vendors —</option>
+          ${VENDORS.map(v => `<option value="${v.id}"
+            ${a.vendor_id === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}
+        </select></label>
+    </div>
+
+    <label class="field">
+      <span>Cron <span class="hint">— minute hour day month weekday, in UTC</span></span>
+      <input type="text" id="a-cron" value="${esc(a.cron || '0 8 2 * *')}"></label>
+    <div class="tiny muted mb">
+      ${CRON_HINTS.map(h =>
+        `<code class="inline-code" style="cursor:pointer"
+           onclick="document.getElementById('a-cron').value='${h[0]}'">${h[0]}</code>
+         ${h[1]}`).join(' &nbsp;·&nbsp; ')}
+    </div>
+
+    <label class="field"><span>Or every N minutes</span>
+      <input type="number" id="a-interval_mins" value="${a.interval_mins || ''}"></label>
+
+    <label class="check"><input type="checkbox" id="a-enabled" ${a.enabled ? 'checked' : ''}>
+      <span>Enabled</span></label>
+  `, `
+    ${id ? '<button class="btn danger" id="del">Delete</button>' : ''}
+    <div style="flex:1"></div>
+    <button class="btn" data-close>Cancel</button>
+    <button class="btn primary" id="save">Save</button>`);
+
+  m.querySelector('#save').onclick = e => busy(e.target, async () => {
+    try {
+      await API.post('/api/agents', {
+        id: id || undefined,
+        name: val('a-name'), kind: val('a-kind'),
+        description: val('a-description'),
+        schedule_kind: val('a-schedule_kind'),
+        cron: val('a-cron'),
+        interval_mins: val('a-interval_mins') || null,
+        vendor_id: val('a-vendor_id') || null,
+        enabled: val('a-enabled'),
+      });
+      toast('Saved', 'good'); m.close(); load();
+    } catch (err) { toast(err.message, 'bad'); }
+  });
+
+  const del = m.querySelector('#del');
+  if (del) del.onclick = async () => {
+    if (!confirm(`Delete the agent "${a.name}"?`)) return;
+    try { await API.del(`/api/agents/${id}`); toast('Deleted'); m.close(); load(); }
+    catch (e) { toast(e.message, 'bad'); }
+  };
+}
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

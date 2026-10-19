@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · InvoiceHub</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" method="post">
+    <h1>InvoiceHub</h1>
+    <p class="sub">Centralized accounts payable</p>
+
+    {% if error %}
+    <div class="note-box bad">{{ error }}</div>
+    {% endif %}
+
+    <label class="field">
+      <span>Email</span>
+      <input type="email" name="email" value="{{ email }}" required autofocus>
+    </label>
+    <label class="field">
+      <span>Password</span>
+      <input type="password" name="password" required>
+    </label>
+    <button class="btn primary" style="width:100%;justify-content:center">
+      Sign in
+    </button>
+
+    <p class="tiny faint mt" style="text-align:center">
+      First run? <code class="inline-code">admin@invoicehub.local</code>
+      / <code class="inline-code">changeme</code> — change it immediately.
+    </p>
+  </form>
+</div>
+</body>
+</html>

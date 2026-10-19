@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Activity{% endblock %}
+{% block heading %}Activity{% endblock %}
+{% block subheading %}Everything the portal and its agents have done{% endblock %}
+
+{% block actions %}
+<select id="f-kind" style="width:160px">
+  <option value="">Everything</option>
+  <option value="scan">Mailbox sweeps</option>
+  <option value="parse">Document reads</option>
+  <option value="match">Reconciliations</option>
+  <option value="qbo">QuickBooks</option>
+  <option value="email">Email</option>
+  <option value="agent">Agents</option>
+  <option value="settings">Settings</option>
+  <option value="auth">Sign in</option>
+  <option value="note">Notes</option>
+</select>
+{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-body flush">
+    <div class="table-wrap" style="max-height:78vh">
+      <table id="tbl"><tbody>
+        <tr><td class="empty">Loading…</td></tr>
+      </tbody></table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const k = document.getElementById('f-kind').value;
+  const d = await API.get('/api/activity?limit=400' + (k ? '&kind=' + k : ''));
+  document.querySelector('#tbl tbody').innerHTML = d.activity.length
+    ? d.activity.map(a => `
+      <tr>
+        <td style="width:100px" class="tiny faint nowrap">${ago(a.at)}</td>
+        <td style="width:80px"><span class="pill ${a.ok ? '' : 'bad'}">${esc(a.kind)}</span></td>
+        <td style="width:150px" class="tiny muted">${esc(a.actor || '')}</td>
+        <td>
+          <div>${esc(a.headline)}</div>
+          ${a.detail ? `<div class="tiny muted" style="white-space:pre-wrap">${esc(a.detail)}</div>` : ''}
+        </td>
+      </tr>`).join('')
+    : '<tr><td class="empty">Nothing logged.</td></tr>';
+}
+document.getElementById('f-kind').onchange = load;
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}

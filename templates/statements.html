@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Statements{% endblock %}
+{% block heading %}Statements{% endblock %}
+{% block subheading %}What each vendor says you owe them{% endblock %}
+
+{% block actions %}
+<div class="inline">
+  <input type="text" id="period" value="{{ period }}" style="width:110px"
+         placeholder="YYYY-MM">
+  <button class="btn" id="btn-reload">Show</button>
+  <button class="btn primary" id="btn-chase">Draft requests for the missing</button>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div class="panel" id="missing-panel" hidden>
+  <div class="panel-head">
+    <h3>No statement received</h3>
+    <div class="spacer"></div>
+    <span class="tiny muted">You cannot reconcile a vendor who has not told you
+      what they think you owe.</span>
+  </div>
+  <div class="panel-body" id="missing"></div>
+</div>
+
+<div id="list"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const period = document.getElementById('period').value.trim();
+  const d = await API.get('/api/statements?period=' + encodeURIComponent(period));
+
+  const mp = document.getElementById('missing-panel');
+  mp.hidden = !d.missing.length;
+  document.getElementById('missing').innerHTML = d.missing.map(v =>
+    `<span class="pill warn" style="margin:0 6px 6px 0;display:inline-block">
+       ${esc(v.name)}</span>`).join('') || '';
+
+  document.getElementById('list').innerHTML = d.statements.length
+    ? d.statements.map(s => {
+      const total = (s.lines || []).reduce((a, l) => a + (Number(l.amount) || 0), 0);
+      const drift = Math.abs(total - (Number(s.total_due) || 0)) > 0.02;
+      return `
+      <div class="panel">
+        <div class="panel-head">
+          <h3>${esc(s.vendor_name || 'Unknown vendor')}</h3>
+          <span class="pill">${esc(s.period || '')}</span>
+          ${s.confidence === 'low' ? '<span class="pill warn">low confidence</span>' : ''}
+          <div class="spacer"></div>
+          <span class="muted small">${s.line_count} line(s) ·
+            dated ${dateStr(s.statement_date)}</span>
+          <strong style="margin-left:14px;font-variant-numeric:tabular-nums">
+            ${money(s.total_due, s.currency)}</strong>
+        </div>
+        ${drift ? `<div style="padding:10px 18px">
+          <div class="note-box warn" style="margin:0">
+            Their stated total is ${money(s.total_due, s.currency)} but the lines
+            add to ${money(total, s.currency)} — a difference of
+            ${money((s.total_due || 0) - total, s.currency)}. Some lines may not
+            have been read.</div></div>` : ''}
+        <div class="panel-body flush">
+          <table>
+            <thead><tr>
+              <th>Invoice</th><th>Date</th><th>Due</th><th>Type</th>
+              <th>Age</th><th class="num">Amount</th>
+            </tr></thead>
+            <tbody>${(s.lines || []).map(l => `
+              <tr>
+                <td class="mono">${esc(l.invoice_number || '—')}</td>
+                <td class="tiny nowrap">${dateStr(l.invoice_date)}</td>
+                <td class="tiny nowrap">${dateStr(l.due_date)}</td>
+                <td>${l.line_type !== 'invoice'
+                      ? `<span class="pill info">${esc(l.line_type)}</span>` : ''}</td>
+                <td class="tiny">${esc(l.age_bucket || '')}</td>
+                ${moneyCell(l.amount, s.currency)}
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    }).join('')
+    : '<div class="panel"><div class="empty">No statements for this period.</div></div>';
+}
+
+document.getElementById('btn-reload').onclick = () => load().catch(e => toast(e.message, 'bad'));
+document.getElementById('period').onkeydown = e => { if (e.key === 'Enter') load(); };
+
+document.getElementById('btn-chase').onclick = e => busy(e.target, async () => {
+  try {
+    const agents = (await API.get('/api/agents')).agents;
+    const a = agents.find(x => x.kind === 'request_statement');
+    if (!a) { toast('No statement-request agent is configured', 'bad'); return; }
+    const r = await API.post(`/api/agents/${a.id}/run`, {});
+    toast(r.detail || 'Drafts written — approve them on the Drafts page', 'good');
+  } catch (err) { toast(err.message, 'bad'); }
+});
+
+load().catch(e => toast(e.message, 'bad'));
+</script>
+{% endblock %}
